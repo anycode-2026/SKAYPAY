@@ -141,6 +141,12 @@ const GameView: React.FC<GameViewProps> = ({
     const audio = sfxRef.current[type];
     if (audio) {
         audio.currentTime = 0;
+        // Boost volume for cashout to ensure distinctness
+        if (type === 'cashout') {
+            audio.volume = 1.0; 
+        } else {
+            audio.volume = 0.5;
+        }
         audio.play().catch(() => {});
     }
   }, [isMuted]);
@@ -307,11 +313,11 @@ const GameView: React.FC<GameViewProps> = ({
       setBet(b => ({ ...b, cashedOut: true, active: false })); 
       setWinModal({ show: true, amount: parseFloat(winAmount.toFixed(2)) });
       queueVoice("Cash out successful"); 
-      playSfx('cashout'); // SFX: Cashout
+      playSfx('cashout'); // SFX: Cashout - Boosted Volume
       setTimeout(() => {
         setBet(b => ({ ...b, cashedOut: false, waitingNext: false })); 
         setWinModal(null);
-      }, 2000); // Wait a bit longer to show win
+      }, 3000); // Wait 3 seconds to show win
     }
   };
 
@@ -445,16 +451,27 @@ const GameView: React.FC<GameViewProps> = ({
       {/* Game Canvas with PROFESSIONAL BACKGROUND */}
       <div className="relative bg-[#0b0f19] rounded-[24px] border border-white/10 overflow-hidden shadow-2xl h-[180px]">
         
-        {/* NEW TOP POSITIONED WIN MODAL */}
+        {/* NEW ENHANCED WIN MODAL - UPDATED ZOOM ANIMATION */}
         {winModal && (
-            <div className="absolute top-4 left-1/2 transform -translate-x-1/2 z-50 pointer-events-none w-64 animate-in slide-in-from-top-4 fade-in zoom-in duration-300">
-               <div className="bg-[#001529]/95 backdrop-blur-xl border-2 border-green-500/50 p-2 rounded-full text-center shadow-[0_0_50px_rgba(34,197,94,0.6)] relative overflow-hidden flex items-center gap-3 pr-6 pl-2">
-                  <div className="w-10 h-10 bg-green-500 rounded-full flex items-center justify-center shadow-lg animate-bounce shrink-0">
-                      <span className="material-symbols-outlined text-black text-2xl">check</span>
-                  </div>
-                  <div className="flex flex-col items-start">
-                      <h2 className="text-[10px] font-black text-green-400 uppercase tracking-widest leading-none">YOU WON!</h2>
-                      <p className="text-xl font-black text-white drop-shadow-sm leading-none">৳ {winModal.amount.toLocaleString()}</p>
+            <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 z-50 pointer-events-none w-full flex justify-center animate-in fade-in zoom-in-90 duration-300">
+               <div className="relative">
+                  {/* Burst Effect */}
+                  <div className="absolute inset-0 bg-green-500/40 blur-[60px] rounded-full animate-pulse"></div>
+                  
+                  <div className="bg-[#001529]/95 backdrop-blur-2xl border-2 border-green-500 p-8 rounded-[32px] text-center shadow-[0_0_100px_rgba(34,197,94,0.6)] relative overflow-hidden flex flex-col items-center gap-3 transform transition-all scale-100 ring-4 ring-green-400/20 min-w-[300px]">
+                      <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-transparent via-green-400 to-transparent"></div>
+                      
+                      <div className="w-20 h-20 bg-gradient-to-br from-green-400 to-emerald-600 rounded-full flex items-center justify-center shadow-lg animate-[bounce_1s_infinite] mb-2 border-4 border-[#001529] relative z-10">
+                          <span className="material-symbols-outlined text-white text-5xl font-black drop-shadow-md">emoji_events</span>
+                      </div>
+                      
+                      <h2 className="text-base font-black text-green-400 uppercase tracking-[0.4em] leading-none relative z-10">Cash Out!</h2>
+                      <p className="text-5xl font-black text-white drop-shadow-[0_4px_8px_rgba(0,0,0,0.5)] tabular-nums leading-none relative z-10">
+                        ৳{winModal.amount.toLocaleString()}
+                      </p>
+                      
+                      {/* Shine effect */}
+                      <div className="absolute top-0 left-[-100%] w-full h-full bg-gradient-to-r from-transparent via-white/20 to-transparent skew-x-12 animate-[spin_2s_linear_infinite] opacity-50"></div>
                   </div>
                </div>
             </div>
@@ -545,7 +562,7 @@ const GameView: React.FC<GameViewProps> = ({
           <button 
             onClick={handlePlaceBet}
             disabled={bet.active}
-            className={`w-full py-3 rounded-[16px] font-black text-sm uppercase tracking-[0.2em] shadow-lg active:scale-95 transition-all flex items-center justify-center gap-2 border-t border-white/20 ${bet.active ? 'bg-green-900/50 border-green-800 cursor-not-allowed opacity-80' : 'bg-gradient-to-r from-green-600 to-emerald-700 hover:shadow-[0_0_20px_rgba(34,197,94,0.4)]'}`}
+            className={`w-full py-3 rounded-[16px] font-black text-sm uppercase tracking-[0.2em] shadow-lg active:scale-95 transition-all duration-200 flex items-center justify-center gap-2 border-t border-white/20 ${bet.active ? 'bg-green-900/50 border-green-800 cursor-not-allowed opacity-80' : 'bg-gradient-to-r from-green-600 to-emerald-700 hover:shadow-[0_0_20px_rgba(34,197,94,0.4)] hover:scale-[1.02] hover:brightness-110'}`}
           >
             {bet.active ? (
                 <>

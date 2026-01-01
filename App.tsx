@@ -14,6 +14,7 @@ import AdminPanel from './components/AdminPanel';
 import PromoModal from './components/PromoModal'; 
 import SupportModal, { ChatMessage } from './components/SupportModal';
 import AgentPanel from './components/AgentPanel'; 
+import { GoogleGenAI, Modality } from "@google/genai";
 
 export interface Transaction {
   id: string;
@@ -87,6 +88,36 @@ export interface AdminSettings {
 
 export type GameType = string; 
 
+// --- AUDIO HELPERS ---
+function decode(base64: string) {
+  const binaryString = atob(base64);
+  const len = binaryString.length;
+  const bytes = new Uint8Array(len);
+  for (let i = 0; i < len; i++) {
+    bytes[i] = binaryString.charCodeAt(i);
+  }
+  return bytes;
+}
+
+async function decodeAudioData(
+  data: Uint8Array,
+  ctx: AudioContext,
+  sampleRate: number,
+  numChannels: number,
+): Promise<AudioBuffer> {
+  const dataInt16 = new Int16Array(data.buffer);
+  const frameCount = dataInt16.length / numChannels;
+  const buffer = ctx.createBuffer(numChannels, frameCount, sampleRate);
+
+  for (let channel = 0; channel < numChannels; channel++) {
+    const channelData = buffer.getChannelData(channel);
+    for (let i = 0; i < frameCount; i++) {
+      channelData[i] = dataInt16[i * numChannels + channel] / 32768.0;
+    }
+  }
+  return buffer;
+}
+
 const App: React.FC = () => {
   const [isAppLoading, setIsAppLoading] = useState(true);
   const [isTransitioning, setIsTransitioning] = useState(false);
@@ -105,6 +136,10 @@ const App: React.FC = () => {
   const [isGlobalMuted, setIsGlobalMuted] = useState(false);
   const [referralCodeFromUrl, setReferralCodeFromUrl] = useState<string | null>(null);
   const [supportMessages, setSupportMessages] = useState<ChatMessage[]>([]);
+  
+  // Gemini Client
+  const [geminiClient, setGeminiClient] = useState<GoogleGenAI | null>(null);
+  const audioContextRef = useRef<AudioContext | null>(null);
 
   const [adminSettings, setAdminSettings] = useState<AdminSettings>({
     siteTitle: 'SKY HIGH',
@@ -120,24 +155,35 @@ const App: React.FC = () => {
     externalGames: [] 
   });
 
-  // --- GLOBAL AUDIO UNLOCKER (FIXES SOUND ISSUES) ---
+  // --- INIT GEMINI ---
+  useEffect(() => {
+    try {
+        // Initialize Gemini Client with the environment variable API Key
+        if (process.env.API_KEY) {
+            setGeminiClient(new GoogleGenAI({ apiKey: process.env.API_KEY }));
+        } else {
+            console.warn("Gemini API Key not found in process.env.API_KEY. Falling back to native TTS.");
+        }
+    } catch (e) {
+        console.error("Failed to initialize Gemini Client:", e);
+    }
+  }, []);
+
+  // --- GLOBAL AUDIO UNLOCKER ---
   useEffect(() => {
     const unlockAudio = () => {
         if (window.speechSynthesis) {
             window.speechSynthesis.resume();
-            // Play a silent utterance to force the browser to active TTS
             const u = new SpeechSynthesisUtterance("");
             u.volume = 0;
             window.speechSynthesis.speak(u);
         }
-        // Create a dummy audio context to unlock WebAudio
         const AudioContext = window.AudioContext || (window as any).webkitAudioContext;
         if (AudioContext) {
             const ctx = new AudioContext();
             ctx.resume().then(() => ctx.close());
         }
     };
-    // Listen for any interaction to unlock sound
     window.addEventListener('click', unlockAudio, { once: true });
     window.addEventListener('touchstart', unlockAudio, { once: true });
     
@@ -147,41 +193,85 @@ const App: React.FC = () => {
     };
   }, []);
 
-  // --- ROBUST VOICE SYSTEM ---
-  const queueVoice = (text: string) => {
+  // --- ROBUST VOICE SYSTEM (GEMINI > MALE VOICE PRIORITY) ---
+  const queueVoice = async (text: string) => {
     if (isGlobalMuted) return;
-    // If Admin Panel is open, ONLY allow "Boss" messages
     if (showAdminPanel && !text.includes("Boss")) return;
     
+    // 1. Try Gemini TTS
+    if (geminiClient) {
+        try {
+            const response = await geminiClient.models.generateContent({
+                model: "gemini-2.5-flash-preview-tts",
+                contents: [{ parts: [{ text: text }] }],
+                config: {
+                    responseModalities: [Modality.AUDIO],
+                    speechConfig: {
+                        voiceConfig: {
+                            prebuiltVoiceConfig: { voiceName: 'Kore' }, // 'Kore' is a robust male-sounding voice
+                        },
+                    },
+                },
+            });
+            
+            const base64Audio = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
+            if (base64Audio) {
+                if (!audioContextRef.current) {
+                    const AudioContext = window.AudioContext || (window as any).webkitAudioContext;
+                    audioContextRef.current = new AudioContext({sampleRate: 24000});
+                }
+                const ctx = audioContextRef.current;
+                if (ctx.state === 'suspended') await ctx.resume();
+
+                const audioBuffer = await decodeAudioData(
+                    decode(base64Audio),
+                    ctx,
+                    24000, 
+                    1
+                );
+                
+                const source = ctx.createBufferSource();
+                source.buffer = audioBuffer;
+                source.connect(ctx.destination);
+                source.start();
+                return; // Exit if Gemini success
+            }
+        } catch (error) {
+            console.warn("Gemini TTS failed, falling back to Native TTS:", error);
+        }
+    }
+
+    // 2. Fallback to Native SpeechSynthesis
     if (!window.speechSynthesis) return;
 
-    // Force cancel previous to ensure new message plays immediately (critical for game sync)
     window.speechSynthesis.cancel();
 
     const utterance = new SpeechSynthesisUtterance(text);
     utterance.volume = 1.0;
-    utterance.rate = 1.1; 
-    utterance.pitch = 1.2; // Female pitch target
+    utterance.rate = 1.0; 
     
-    // Select Voice
+    // Male Voice Tuning
     const voices = window.speechSynthesis.getVoices();
-    const femaleVoice = voices.find(v => 
+    const maleVoice = voices.find(v => 
         v.name.includes('Google US English') || 
-        v.name.includes('Samantha') || 
-        v.name.includes('Zira') ||
-        v.name.includes('Female')
+        v.name.includes('David') || 
+        v.name.includes('Daniel') ||
+        v.name.includes('Male')
     );
     
-    if (femaleVoice) utterance.voice = femaleVoice;
+    if (maleVoice) {
+        utterance.voice = maleVoice;
+    } else {
+        utterance.pitch = 0.8; 
+    }
     
     window.speechSynthesis.speak(utterance);
   };
 
-  // --- ADMIN PANEL WELCOME & CHECKS ---
+  // --- ADMIN PANEL WELCOME ---
   useEffect(() => {
       if (showAdminPanel) {
-          queueVoice("Welcome Admin Boss");
-          // Check Pending Logic...
+          queueVoice("Welcome Sky Pay Admin Boss");
       }
   }, [showAdminPanel]);
 
@@ -247,7 +337,6 @@ const App: React.FC = () => {
   const generateUID = () => Math.floor(10000000 + Math.random() * 90000000).toString();
 
   const handleAuthAction = (type: 'login' | 'register' | 'google', data: any) => {
-    // Immediate Voice Feedback on Auth
     if(window.speechSynthesis) window.speechSynthesis.resume();
 
     const db = getUsersDB();
@@ -393,11 +482,10 @@ const App: React.FC = () => {
           const amount = parseFloat(payload.amount);
           if (!isNaN(amount)) {
               db[email].agentBalance = (db[email].agentBalance || 0) + amount;
-              // Log the transaction
               db[email].transactions.unshift({
                   id: 'AG-ADM-' + Date.now(), 
                   type: 'admin_agent_adjustment', 
-                  amount: Math.abs(amount), // Show positive for log, sign logic handled in balance
+                  amount: Math.abs(amount), 
                   method: amount > 0 ? 'Admin Bonus' : 'Admin Deduction', 
                   status: 'success', 
                   date: new Date().toLocaleString()
@@ -450,26 +538,25 @@ const App: React.FC = () => {
     setShowGame(false);
   };
 
-  // --- NEW HANDLER TO SET PIN ---
   const handleSetUserPin = (pin: string) => {
       updateCurrentUser(prev => ({...prev, withdrawalPin: pin}));
   };
 
-  // Updated to accept phone/account info
   const addTransaction = (type: 'deposit' | 'withdraw', amount: number, method: string, phone?: string) => {
     if (!currentUser) return;
     if (type === 'withdraw' && currentUser.balance < amount) return;
     
+    // SPECIFIC VOICE TRIGGERS FOR TRANSACTIONS
     if (type === 'deposit') {
-        queueVoice("Deposit successful. Wait for approval.");
+        queueVoice("Deposit Request Sent to Sky Pay Admin");
     } else if (type === 'withdraw') {
-        queueVoice("Withdrawal request successful. Sent to admin.");
+        queueVoice("Withdrawal request successful. Sent to Sky Pay admin.");
     }
 
     const newTx: Transaction = {
       id: Math.random().toString(36).substr(2, 9).toUpperCase(),
       userEmail: currentUser.email,
-      type, amount, method, phone, // Save the phone/account info here
+      type, amount, method, phone, 
       status: 'pending', date: new Date().toLocaleString(),
     };
 
@@ -481,7 +568,6 @@ const App: React.FC = () => {
   };
 
   const handleAdminAction = (txId: string, action: 'approve' | 'reject') => {
-    // ... (Existing Implementation)
     const db = getUsersDB();
     let targetUserEmail = '';
     for (const email in db) {
@@ -526,7 +612,6 @@ const App: React.FC = () => {
     if (currentUser?.email === targetUserEmail) updateCurrentUser(() => user);
   };
 
-  // ... (Passthrough remaining handlers)
   const applyForAgent = (data: AgentApplicationData) => {
       updateCurrentUser(prev => ({ ...prev, isAgentPending: true, agentApplication: data }));
       queueVoice("Agent Application Submitted.");
@@ -721,7 +806,6 @@ const App: React.FC = () => {
       <AuthModals activeModal={activeModal} onClose={() => setActiveModal(null)} onSwitch={(type) => setActiveModal(type)} onAuthAction={handleAuthAction} />
       {showDeposit && <DepositModal onClose={() => setShowDeposit(false)} onSuccess={(amt, method) => addTransaction('deposit', amt, method)} adminSettings={adminSettings} />}
       
-      {/* UPDATED WITHDRAW MODAL WITH PIN LOGIC & PHONE PASSING */}
       {showWithdraw && (
           <WithdrawModal 
             balance={currentUser?.balance || 0} 
@@ -756,7 +840,7 @@ const App: React.FC = () => {
           onClose={() => setShowAdminPanel(false)}
           onAction={handleAdminAction}
           onUpdateSettings={setAdminSettings}
-          queueVoice={(text) => { window.speechSynthesis.cancel(); const u = new SpeechSynthesisUtterance(text); window.speechSynthesis.speak(u); }} // Dedicated Admin Voice Channel
+          queueVoice={(text) => { window.speechSynthesis.cancel(); const u = new SpeechSynthesisUtterance(text); window.speechSynthesis.speak(u); }} 
           supportMessages={supportMessages}
           onAdminReply={handleAdminReply}
           onManageUsers={handleUserManagement}
